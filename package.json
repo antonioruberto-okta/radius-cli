@@ -1,0 +1,14 @@
+{
+  "name": "radius-cli",
+  "description": "radius client cli",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "radius": "~1.0.3",
+    "yargs": "~1.0.15",
+    "inquirer": "~0.6.0"
+  }
+}
