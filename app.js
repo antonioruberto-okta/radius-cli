@@ -1,127 +1,130 @@
-var radius      = require('radius');
-var dgram       = require("dgram");
-var util        = require('util');
-var inquirer    = require('inquirer');
+/* eslint-disable no-console */
 
+const dgram = require('dgram');
+const inquirer = require('inquirer');
+const os = require('os');
+const radius = require('radius');
+const yargs = require('yargs');
 
-var argv = require('yargs')
-    .usage('RADIUS Client CLI\nUsage: $0')
-    .example('$0 --h localhost --p 1812 --s secret')
-    .default({ host: 'localhost', port: 1812, s: 'grumble,grumble' })
-    .alias('h', 'host')
-    .describe('host', 'RADIUS server hostname')
-    .alias('p', 'port')
-    .describe('port', 'RADIUS server port')
-    .alias('s', 'secret')
-    .describe('secret', 'RADIUS secret')
-    .demand('host', 'port', 'secret')
-    .argv
-;
+const argv = yargs
+  .usage('RADIUS Client CLI\nUsage: $0')
+  .example('$0 --secret secret')
+  .alias('h', 'host')
+  .describe('host', 'RADIUS server hostname')
+  .default('host', 'localhost')
+  .string('host')
+  .alias('p', 'port')
+  .describe('port', 'RADIUS server port')
+  .default('port', 1812)
+  .number('port')
+  .alias('s', 'secret')
+  .describe('secret', 'RADIUS shared secret')
+  .string('secret')
+  .demandOption('secret')
+  .alias('u', 'username')
+  .describe('username', 'RADIUS login username')
+  .string('username')
+  .alias('w', 'password')
+  .describe('password', 'RADIUS login password')
+  .string('password')
+  .argv;
 
-
+console.log(`RADIUS Server: ${argv.host}`);
+console.log(`RADIUS Port: ${argv.port}`);
+console.log(`RADIUS Secret: ${argv.secret}`);
 console.log();
-console.log('loading configuration...');
-console.log();
-console.log('RADIUS Server:\n\t' + argv.host);
-console.log('RADIUS Port:\n\t' + argv.port);
-console.log('RADIUS Secret:\n\t' + argv.secret);
-console.log();
 
+const client = dgram.createSocket('udp4');
+const sentPackets = {};
+let identifier = 0;
 
-var client = dgram.createSocket("udp4");
-var identifier = 0;
-var sent_packets = {};
+function sendPacket(attributes) {
+  identifier += 1;
+  const packet = {
+    code: 'Access-Request',
+    secret: argv.secret,
+    identifier,
+    attributes
+  };
+  const encoded = radius.encode(packet);
+  sentPackets[packet.identifier] = { raw_packet: encoded, secret: packet.secret };
 
-var login= function() {
-	console.log('----------------------------');
-	console.log("Login");
-	var questions = [
-		{
-			type: "input", name: "username", message: "UserName:"
-		},
-		{
-			type: "input", name: "password", message: "Password:"
-		}
-	];
-	inquirer.prompt(questions, function(answers) {
-		var packet = {
-			code: "Access-Request",
-			secret: argv.secret,
-			identifier: identifier++,
-			attributes: [
-				['NAS-IP-Address', '127.0.0.1'],
-				['User-Name', answers.username],
-				['User-Password', answers.password]
-			]
-		};
-		var encoded = radius.encode(packet);
-		sent_packets[packet.identifier] = {
-			raw_packet: encoded,
-			secret: packet.secret
-		};
-		console.log();
-		console.log('Access-Request [' + packet.identifier + '] => ' + argv.host + ':' + argv.port);
-		client.send(encoded, 0, encoded.length, argv.port, argv.host);
-	});
+  console.log();
+  console.log(`Access-Request [${packet.identifier}] => ${argv.host}:${argv.port}`);
+
+  client.send(encoded, 0, encoded.length, argv.port, argv.host);
 }
 
-client.on('message', function(msg, rinfo) {
-	var questions, state, replyMessage;
-	var response = radius.decode({packet: msg, secret: argv.secret});
-	var request = sent_packets[response.identifier];
-	var valid_response = radius.verify_response({
-		response: msg,
-		request: request.raw_packet,
-		secret: request.secret
-	});
+function login() {
+  console.log('----------------------------');
+  console.log('Login');
+  const questions = [];
 
-	if (valid_response) {
-		console.log(argv.host + ':' + argv.port + ' => ' + response.code + ' [' + response.identifier + ']');
-		console.log();
-		switch (response.code) {
-			case 'Access-Challenge':
-				state = response.attributes['State'];
-				replyMessage = response.attributes['Reply-Message'];
+  if (!argv.username) {
+    questions.push({ type: 'input', name: 'username', message: 'UserName:' });
+  }
 
-				questions = [
-					{
-						type: "input", name: "factor", message: replyMessage + '\r\n'
-					}
-				];
-				inquirer.prompt(questions, function(answers) {
-					var packet = {
-						code: "Access-Request",
-						secret: argv.secret,
-						identifier: identifier++,
-						attributes: [
-							['State', state],
-							['User-Name', state],
-							['User-Password', answers.factor]
-						]
-					};
-					var encoded = radius.encode(packet);
-					sent_packets[packet.identifier] = {
-						raw_packet: encoded,
-						secret: packet.secret
-					};
-					console.log();
-					console.log('Access-Request [' + packet.identifier + '] => ' + argv.host + ':' + argv.port );
-					client.send(encoded, 0, encoded.length, argv.port, argv.host);
-				});
-				break;
-			case 'Access-Accept':
-				console.log("User Authenticated!")
-				client.close();
-				break;
-			case 'Access-Reject':
-				console.log("User Rejected!")
-				login();
-				break;
-		}
-	} else {
-		console.log(argv.port + ':' + argv.host + ' => ' + response.code + ' [' + packet.identifier + '] - Invalid Response');
-	}
+  if (!argv.password) {
+    questions.push({ type: 'input', name: 'password', message: 'Password:' });
+  }
+
+  inquirer.prompt(questions).then((answers) => {
+    sendPacket([
+      ['NAS-IP-Address', '127.0.0.1'],
+      ['User-Name', argv.username || answers.username],
+      ['User-Password', argv.password || answers.password]
+    ]);
+  }).catch(err => {
+    console.log(err);
+  });
+}
+
+client.on('message', (msg) => {
+  const response = radius.decode({ packet: msg, secret: argv.secret });
+  const request = sentPackets[response.identifier];
+  const isValid = radius.verify_response({
+    response: msg,
+    request: request.raw_packet,
+    secret: request.secret
+  });
+
+  if (isValid) {
+    console.log(`${argv.host}:${argv.port} => ${response.code} [${response.identifier}]`);
+    console.log();
+
+    switch (response.code) {
+      case 'Access-Challenge': {
+        const questions = [{
+          type: 'input',
+          name: 'challenge',
+          suffix: os.EOL,
+          message: response.attributes['Reply-Message']
+        }];
+
+        inquirer.prompt(questions).then((answers) => {
+          sendPacket([
+            ['State', response.attributes.State],
+            ['User-Name', '-'],
+            ['User-Password', answers.challenge]
+          ]);
+        }).catch(err => {
+          console.log(err);
+        });
+        break;
+      }
+      case 'Access-Accept':
+        console.log('User Authenticated!');
+        client.close();
+        break;
+      case 'Access-Reject':
+        console.log('User Rejected!');
+        client.close();
+        break;
+      default:
+    }
+  } else {
+    console.log(`${argv.host}:${argv.port} => ${response.code} [${response.identifier}] - Invalid Response`);
+  }
 });
 
-// Prompt for Credentials
 login();
